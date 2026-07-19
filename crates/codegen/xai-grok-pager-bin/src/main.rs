@@ -44,7 +44,7 @@ use xai_grok_shell::leader::{
 use xai_grok_shell::leader::{
     ControlPayload, LeaderClient, LeaderEnvUrls, connect_or_spawn, socket_path_for_ws_url,
 };
-use xai_grok_update::{UpdateConfig, auto_update, enforce_minimum_version_or_exit};
+use xai_grok_update::{UpdateConfig, auto_update};
 /// Apply headless args to an existing config, only overriding values that are
 /// explicitly set. This allows environment defaults to be preserved when
 /// specific args are not provided.
@@ -1777,7 +1777,6 @@ async fn async_main() -> Result<()> {
                          Use `grok-pager agent {flag}` instead."
                     );
                 }
-                enforce_minimum_version_or_exit(&update_config).await;
                 return run_agent_command(
                     agent_args,
                     args.permission_mode_flag.clone(),
@@ -1787,6 +1786,9 @@ async fn async_main() -> Result<()> {
                     &update_config,
                 )
                 .await;
+            }
+            Command::Codex(codex_args) => {
+                return xai_grok_pager::codex::run(codex_args).await;
             }
             Command::Inspect { json } => {
                 let cwd = std::env::current_dir().unwrap_or_default();
@@ -1870,27 +1872,11 @@ async fn async_main() -> Result<()> {
             Command::Memory(memory_args) => {
                 return xai_grok_pager::memory_cmd::run(memory_args);
             }
-            Command::Update {
-                check,
-                json,
-                force_reinstall,
-                version,
-                alpha,
-                stable,
-                enterprise,
-            } => {
-                init_tracing_simple("cli");
-                let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let channel_switch = get_channel_switch(alpha, stable, enterprise);
-                return run_update_command(
-                    check,
-                    json,
-                    force_reinstall,
-                    version,
-                    channel_switch,
-                    &update_config,
-                )
-                .await;
+            Command::Update { .. } => {
+                anyhow::bail!(
+                    "Grox does not use the xAI binary updater. Pull the latest changes from \
+                     https://github.com/micic-mihajlo/grox and rebuild."
+                );
             }
             Command::Login {
                 legacy: _,
@@ -1938,7 +1924,6 @@ async fn async_main() -> Result<()> {
     if let Some(prompt) = headless_prompt {
         init_tracing_simple(HEADLESS_ENTRYPOINT);
         let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-        enforce_minimum_version_or_exit(&update_config).await;
         let launch_yolo = xai_grok_shell::util::config::effective_yolo_for_launch(
             args.yolo,
             args.permission_mode_flag.as_deref(),
@@ -2001,7 +1986,6 @@ async fn async_main() -> Result<()> {
         )
         .await;
     }
-    enforce_minimum_version_or_exit(&update_config).await;
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
@@ -2113,15 +2097,10 @@ fn build_update_config() -> UpdateConfig {
 }
 /// Central gate for auto-update checks; add new suppression rules here,
 /// not at call sites.
-fn should_check_for_updates(no_auto_update_flag: bool) -> bool {
-    if cfg!(debug_assertions) {
-        return false;
-    }
-    if no_auto_update_flag {
-        return false;
-    }
-    !std::env::var_os("GROK_DISABLE_AUTOUPDATER")
-        .is_some_and(|v| env_flag_enabled(&v.to_string_lossy()))
+fn should_check_for_updates(_no_auto_update_flag: bool) -> bool {
+    // Grox is source-distributed. The inherited updater downloads official
+    // Grok Build artifacts and would replace this fork's binary.
+    false
 }
 /// Gate for the stdio agent's background auto-update: only the direct stdio
 /// agent, from the managed install. Other modes update in `run_agent_command`.
