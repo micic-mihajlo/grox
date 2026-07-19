@@ -6,6 +6,7 @@ pub mod acp;
 pub mod actions;
 pub mod app;
 pub mod client_identity;
+pub mod codex;
 pub mod completions_cmd;
 mod config_toml_edit;
 pub mod diagnostics;

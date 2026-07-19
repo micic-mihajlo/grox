@@ -7,16 +7,25 @@
     <img alt="SpaceXAI logo" src="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png" width="96">
   </picture>
   <br>
-  Grok Build (<code>grok</code>)
+  Grox (<code>grox</code>)
 </h1>
 
-**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
+**Grox** is a community fork of
+[SpaceXAI's Grok Build](https://github.com/xai-org/grok-build) that adds an
+existing Codex/ChatGPT subscription as a coding-agent provider. The connector
+uses the official `codex app-server` JSONL protocol, matching the
+subscription-backed architecture used by
+[t3code](https://github.com/pingdotgg/t3code); it does not copy browser tokens
+or translate a subscription into an OpenAI API key.
+
+Grok Build is SpaceXAI's terminal-based AI coding agent. It runs as a
 full-screen TUI that understands your codebase, edits files, executes shell
 commands, searches the web, and manages long-running tasks — interactively,
 headlessly for scripting/CI, or embedded in editors via the Agent Client
 Protocol (ACP).
 
-[Installing the released binary](#installing-the-released-binary) ·
+[Installing Grox](#installing-grox) ·
+[Using Codex](#using-codex) ·
 [Building from source](#building-from-source) ·
 [Documentation](#documentation) ·
 [Repository layout](#repository-layout) ·
@@ -26,7 +35,8 @@ Protocol (ACP).
 
 ![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
 
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
+> Grox is not affiliated with or endorsed by xAI or OpenAI. Grok Build remains
+> the upstream foundation and retains its original Apache-2.0 notices.
 
 This repository contains the Rust source for the `grok` CLI/TUI and its agent
 runtime. It is synced periodically from the SpaceXAI monorepo.
@@ -38,18 +48,57 @@ for the version of the code present in this tree.
 
 ---
 
-## Installing the released binary
+## Installing Grox
 
-Prebuilt binaries are published for macOS, Linux, and Windows:
+Grox currently installs from source. Rust is pinned by
+[`rust-toolchain.toml`](rust-toolchain.toml). Install
+[DotSlash](https://dotslash-cli.com) first because the upstream build uses it
+for hermetic tools:
 
 ```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
+cargo install dotslash
+git clone https://github.com/micic-mihajlo/grox.git
+cd grox
+cargo build -p xai-grok-pager-bin --release
+mkdir -p ~/.local/bin
+install -m 755 target/release/grox ~/.local/bin/grox
+grox --version
 ```
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+The inherited xAI updater is disabled in Grox so it cannot overwrite the fork
+with an official Grok binary. Update with `git pull` and rebuild.
+
+## Using Codex
+
+Install the official Codex CLI and authenticate once:
+
+```sh
+codex login
+grox codex --status
+```
+
+Start an interactive subscription-backed session or run one prompt:
+
+```sh
+grox codex
+grox codex -p "review this repository"
+```
+
+Grox discovers the models available to the current Codex account dynamically.
+It runs Codex in its workspace-write sandbox by default. Host-wide access is an
+explicit opt-in:
+
+```sh
+grox codex --full-access
+```
+
+Every run prints its Codex thread ID. Resume that thread later with:
+
+```sh
+grox codex --resume <THREAD_ID>
+```
+
+Use `--codex-binary /path/to/codex` when the CLI is not on `PATH`.
 
 ## Building from source
 
@@ -73,14 +122,15 @@ Requirements:
   and not currently tested from this tree.
 
 ```sh
-cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
+cargo run -p xai-grok-pager-bin              # build + launch the Grok Build TUI
+cargo build -p xai-grok-pager-bin --release  # release binary: target/release/grox
 cargo check -p xai-grok-pager-bin            # fast validation
 ```
 
-The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
+Plain `grox` launches the inherited Grok Build TUI. On first launch it opens
+your browser for Grok authentication — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+`grox codex` instead uses the existing Codex CLI login.
 
 ## Documentation
 
