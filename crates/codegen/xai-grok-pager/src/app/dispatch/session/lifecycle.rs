@@ -1077,7 +1077,7 @@ pub(in crate::app::dispatch) fn handle_switch_model_complete(
                     };
                     agent.scrollback.push_block(RenderBlock::system(msg));
                 }
-                if unchanged {
+                if unchanged || crate::acp::router::is_codex_model(&model_id) {
                     vec![]
                 } else {
                     vec![Effect::PersistPreferredModel {

@@ -74,31 +74,28 @@ Install the official Codex CLI and authenticate once:
 
 ```sh
 codex login
-grox codex --status
+grox
 ```
 
-Start an interactive subscription-backed session or run one prompt:
-
-```sh
-grox codex
-grox codex -p "review this repository"
-```
+Inside the normal Grox TUI, run `/model` and choose any entry prefixed with
+`Codex -`. Switch back to a Grok model from the same picker at any time. Grox
+keeps a separate backend conversation branch for each provider, so switching
+away and back resumes that provider's context without pretending that Grok and
+Codex share tool history.
 
 Grox discovers the models available to the current Codex account dynamically.
-It runs Codex in its workspace-write sandbox by default. Host-wide access is an
-explicit opt-in:
+The same provider-qualified IDs work in headless mode:
 
 ```sh
-grox codex --full-access
+grox models
+grox --model codex:gpt-5.5 -p "review this repository"
 ```
 
-Every run prints its Codex thread ID. Resume that thread later with:
-
-```sh
-grox codex --resume <THREAD_ID>
-```
-
-Use `--codex-binary /path/to/codex` when the CLI is not on `PATH`.
+Codex turns run in the Codex workspace-write sandbox and do not request command
+approvals in this initial integration. If `codex` is missing or logged out,
+Grox still launches normally with Grok models only. Set
+`GROX_CODEX_BINARY=/path/to/codex` when the CLI is not on `PATH`. The older
+`grox codex` subcommand remains available as a connector diagnostic.
 
 ## Building from source
 
@@ -130,7 +127,8 @@ cargo check -p xai-grok-pager-bin            # fast validation
 Plain `grox` launches the inherited Grok Build TUI. On first launch it opens
 your browser for Grok authentication — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
-`grox codex` instead uses the existing Codex CLI login.
+When the official Codex CLI is installed and authenticated, its subscription
+models appear alongside Grok in the TUI's `/model` picker.
 
 ## Documentation
 
