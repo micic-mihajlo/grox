@@ -770,6 +770,10 @@ pub enum ReasoningEffort {
     Medium,
     High,
     Xhigh,
+    /// Codex app-server tier above `xhigh` for maximum single-agent depth.
+    Max,
+    /// Codex app-server tier that enables automatic subagent delegation.
+    Ultra,
 }
 
 impl ReasoningEffort {
@@ -780,7 +784,7 @@ impl ReasoningEffort {
             Self::Low => crate::rs::ReasoningEffort::Low,
             Self::Medium => crate::rs::ReasoningEffort::Medium,
             Self::High => crate::rs::ReasoningEffort::High,
-            Self::Xhigh => crate::rs::ReasoningEffort::Xhigh,
+            Self::Xhigh | Self::Max | Self::Ultra => crate::rs::ReasoningEffort::Xhigh,
         }
     }
 
@@ -805,6 +809,8 @@ impl ReasoningEffort {
             Self::Medium => "medium",
             Self::High => "high",
             Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
         }
     }
 
@@ -815,7 +821,7 @@ impl ReasoningEffort {
             Self::Low => Some("low"),
             Self::Medium => Some("medium"),
             Self::High => Some("high"),
-            Self::Xhigh => Some("max"),
+            Self::Xhigh | Self::Max | Self::Ultra => Some("max"),
         }
     }
 }
@@ -836,9 +842,13 @@ impl std::str::FromStr for ReasoningEffort {
             "low" => Ok(Self::Low),
             "medium" => Ok(Self::Medium),
             "high" => Ok(Self::High),
-            "xhigh" | "max" => Ok(Self::Xhigh), // max is a CLI/UX alias of xhigh
+            // Keep `max` as the historical Grok CLI alias of `xhigh` here.
+            // A model catalog can still expose first-class `Max` by
+            // deserializing an effort option whose value is `"max"`.
+            "xhigh" | "max" => Ok(Self::Xhigh),
+            "ultra" => Ok(Self::Ultra),
             _ => Err(format!(
-                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max)"
+                "invalid reasoning effort: {s:?} (expected one of: none, minimal, low, medium, high, xhigh, max, ultra)"
             )),
         }
     }
@@ -1207,6 +1217,8 @@ mod tests {
             ReasoningEffort::Medium,
             ReasoningEffort::High,
             ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+            ReasoningEffort::Ultra,
         ] {
             let json = serde_json::to_string(&v).unwrap();
             assert_eq!(json, format!("\"{}\"", v.as_str()), "serialize {v:?}");
@@ -1214,7 +1226,10 @@ mod tests {
             assert_eq!(back, v, "round-trip {v:?}");
         }
         assert!(serde_json::from_str::<ReasoningEffort>("\"BOGUS\"").is_err());
-        assert!(serde_json::from_str::<ReasoningEffort>("\"max\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<ReasoningEffort>("\"max\"").unwrap(),
+            ReasoningEffort::Max
+        );
     }
 
     #[test]
@@ -1398,8 +1413,11 @@ mod tests {
         );
         let bad_type = as_map(serde_json::json!({"reasoningEffort": 3}));
         assert_eq!(parse_reasoning_effort_meta(Some(&bad_type)), None);
-        let unknown = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
-        assert_eq!(parse_reasoning_effort_meta(Some(&unknown)), None);
+        let ultra = as_map(serde_json::json!({"reasoningEffort": "ULTRA"}));
+        assert_eq!(
+            parse_reasoning_effort_meta(Some(&ultra)),
+            Some(ReasoningEffort::Ultra)
+        );
     }
 
     #[test]

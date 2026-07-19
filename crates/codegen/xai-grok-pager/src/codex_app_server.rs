@@ -19,12 +19,18 @@ use tokio::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
+pub(crate) struct CodexReasoningEffort {
+    pub value: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct CodexModel {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub is_default: bool,
-    pub supported_reasoning_efforts: Vec<String>,
+    pub supported_reasoning_efforts: Vec<CodexReasoningEffort>,
     pub default_reasoning_effort: Option<String>,
 }
 
@@ -213,10 +219,17 @@ impl CodexAppServer {
                         .into_iter()
                         .flatten()
                         .filter_map(|effort| {
-                            effort
+                            let value = effort
                                 .as_str()
                                 .or_else(|| effort.get("reasoningEffort")?.as_str())
-                                .map(ToOwned::to_owned)
+                                .map(ToOwned::to_owned)?;
+                            Some(CodexReasoningEffort {
+                                value,
+                                description: effort
+                                    .get("description")
+                                    .and_then(Value::as_str)
+                                    .map(ToOwned::to_owned),
+                            })
                         })
                         .collect(),
                     default_reasoning_effort: model
@@ -263,24 +276,13 @@ impl CodexAppServer {
         thread_id: &str,
         input: Vec<Value>,
         model: &str,
+        effort: Option<&str>,
         cwd: &Path,
     ) -> Result<String> {
         let response = self
             .request(
                 "turn/start",
-                json!({
-                    "threadId": thread_id,
-                    "input": input,
-                    "model": model,
-                    "approvalPolicy": "never",
-                    "sandboxPolicy": {
-                        "type": "workspaceWrite",
-                        "writableRoots": [cwd],
-                        "networkAccess": false,
-                        "excludeTmpdirEnvVar": false,
-                        "excludeSlashTmp": false
-                    }
-                }),
+                turn_start_params(thread_id, input, model, effort, cwd),
             )
             .await?;
         response
@@ -330,6 +332,32 @@ impl CodexAppServer {
     }
 }
 
+fn turn_start_params(
+    thread_id: &str,
+    input: Vec<Value>,
+    model: &str,
+    effort: Option<&str>,
+    cwd: &Path,
+) -> Value {
+    let mut params = json!({
+        "threadId": thread_id,
+        "input": input,
+        "model": model,
+        "approvalPolicy": "never",
+        "sandboxPolicy": {
+            "type": "workspaceWrite",
+            "writableRoots": [cwd],
+            "networkAccess": false,
+            "excludeTmpdirEnvVar": false,
+            "excludeSlashTmp": false
+        }
+    });
+    if let Some(effort) = effort {
+        params["effort"] = Value::String(effort.to_owned());
+    }
+    params
+}
+
 fn is_server_request(message: &Value) -> bool {
     message.get("id").is_some() && message.get("method").is_some()
 }
@@ -375,5 +403,18 @@ mod tests {
             format_rpc_error(&json!({ "code": -32000, "message": "no thread" })),
             "no thread (-32000)"
         );
+    }
+
+    #[test]
+    fn turn_start_forwards_explicit_reasoning_effort() {
+        let params = turn_start_params(
+            "thread-1",
+            vec![json!({ "type": "text", "text": "hello" })],
+            "gpt-5.6-sol",
+            Some("ultra"),
+            Path::new("/tmp/project"),
+        );
+        assert_eq!(params["effort"], "ultra");
+        assert_eq!(params["model"], "gpt-5.6-sol");
     }
 }

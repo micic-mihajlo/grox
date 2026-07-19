@@ -24,7 +24,10 @@ struct CodexBackend {
 #[derive(Debug, Clone)]
 enum ActiveProvider {
     Grok,
-    Codex { model: String },
+    Codex {
+        model: String,
+        effort: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +160,7 @@ impl GroxAgent {
         &self,
         args: acp::PromptRequest,
         model: String,
+        effort: Option<String>,
     ) -> Result<acp::PromptResponse, acp::Error> {
         let backend = self.codex_backend()?;
         let session_key = args.session_id.0.to_string();
@@ -185,7 +189,7 @@ impl GroxAgent {
         let mut notifications = backend.server.subscribe();
         let turn_id = backend
             .server
-            .start_turn(&thread_id, input, &model, &cwd)
+            .start_turn(&thread_id, input, &model, effort.as_deref(), &cwd)
             .await
             .map_err(codex_error)?;
         if let Some(route) = self.sessions.borrow_mut().get_mut(&session_key) {
@@ -379,7 +383,7 @@ impl acp::Agent for GroxAgent {
             .unwrap_or(ActiveProvider::Grok);
         match provider {
             ActiveProvider::Grok => self.grok.prompt(args).await,
-            ActiveProvider::Codex { model } => self.prompt_codex(args, model).await,
+            ActiveProvider::Codex { model, effort } => self.prompt_codex(args, model, effort).await,
         }
     }
 
@@ -439,10 +443,21 @@ impl acp::Agent for GroxAgent {
         let requested = args.model_id.0.as_ref();
         if let Some(model) = requested.strip_prefix(CODEX_MODEL_PREFIX) {
             let backend = self.codex_backend()?;
-            if !backend.status.models.iter().any(|entry| entry.id == model) {
-                return Err(acp::Error::invalid_params()
-                    .data(format!("unknown Codex subscription model: {model}")));
-            }
+            let model_info = backend
+                .status
+                .models
+                .iter()
+                .find(|entry| entry.id == model)
+                .ok_or_else(|| {
+                    acp::Error::invalid_params()
+                        .data(format!("unknown Codex subscription model: {model}"))
+                })?;
+            let requested_effort = args
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("reasoningEffort"))
+                .and_then(Value::as_str);
+            let effort = resolve_codex_effort(model_info, requested_effort)?;
             let mut sessions = self.sessions.borrow_mut();
             let route = sessions
                 .get_mut(args.session_id.0.as_ref())
@@ -453,11 +468,13 @@ impl acp::Agent for GroxAgent {
             }
             route.active = ActiveProvider::Codex {
                 model: model.to_owned(),
+                effort: effort.clone(),
             };
             return Ok(acp::SetSessionModelResponse::new().meta(
                 json!({
                     "provider": "codex",
                     "modelId": format!("{CODEX_MODEL_PREFIX}{model}"),
+                    "reasoningEffort": effort,
                     "context": "Codex and Grok keep separate conversation branches in this session"
                 })
                 .as_object()
@@ -508,13 +525,27 @@ fn codex_model_info(model: &CodexModel, account_label: &str) -> acp::ModelInfo {
         || format!("OpenAI Codex via {account_label}"),
         |description| format!("{description} - OpenAI Codex via {account_label}"),
     );
+    let reasoning_efforts: Vec<Value> = model
+        .supported_reasoning_efforts
+        .iter()
+        .map(|effort| {
+            json!({
+                "id": effort.value,
+                "value": effort.value,
+                "label": codex_effort_label(&effort.value),
+                "description": effort.description,
+                "default": model.default_reasoning_effort.as_deref() == Some(effort.value.as_str()),
+            })
+        })
+        .collect();
     let mut meta = json!({
         "provider": "codex",
         "providerModelId": model.id,
         "acceptsImages": false,
         "isProviderDefault": model.is_default,
-        "supportedReasoningEfforts": model.supported_reasoning_efforts,
-        "defaultReasoningEffort": model.default_reasoning_effort,
+        "supportsReasoningEffort": !model.supported_reasoning_efforts.is_empty(),
+        "reasoningEfforts": reasoning_efforts,
+        "reasoningEffort": model.default_reasoning_effort,
     });
     if let Some(object) = meta.as_object_mut() {
         object.retain(|_, value| !value.is_null());
@@ -522,6 +553,44 @@ fn codex_model_info(model: &CodexModel, account_label: &str) -> acp::ModelInfo {
     acp::ModelInfo::new(id, format!("Codex - {}", model.name))
         .description(description)
         .meta(meta.as_object().cloned())
+}
+
+fn codex_effort_label(value: &str) -> &str {
+    match value {
+        "low" => "Low",
+        "medium" => "Medium",
+        "high" => "High",
+        "xhigh" => "Extra High",
+        "max" => "Max",
+        "ultra" => "Ultra",
+        _ => value,
+    }
+}
+
+fn resolve_codex_effort(
+    model: &CodexModel,
+    requested: Option<&str>,
+) -> Result<Option<String>, acp::Error> {
+    let Some(requested) = requested else {
+        return Ok(model.default_reasoning_effort.clone());
+    };
+    if model
+        .supported_reasoning_efforts
+        .iter()
+        .any(|effort| effort.value == requested)
+    {
+        return Ok(Some(requested.to_owned()));
+    }
+    let offered = model
+        .supported_reasoning_efforts
+        .iter()
+        .map(|effort| effort.value.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(acp::Error::invalid_params().data(format!(
+        "Codex model {} does not support reasoning effort '{requested}'; use one of: {offered}",
+        model.name
+    )))
 }
 
 fn codex_input(blocks: &[acp::ContentBlock]) -> Result<Vec<Value>, acp::Error> {
@@ -630,6 +699,7 @@ fn codex_error(error: anyhow::Error) -> acp::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codex_app_server::CodexReasoningEffort;
 
     #[test]
     fn codex_models_have_collision_safe_ids_and_provider_labels() {
@@ -639,7 +709,10 @@ mod tests {
                 name: "GPT-5.4".to_owned(),
                 description: None,
                 is_default: true,
-                supported_reasoning_efforts: vec!["medium".to_owned()],
+                supported_reasoning_efforts: vec![CodexReasoningEffort {
+                    value: "medium".to_owned(),
+                    description: Some("Balanced reasoning".to_owned()),
+                }],
                 default_reasoning_effort: Some("medium".to_owned()),
             },
             "ChatGPT plus subscription",
@@ -650,6 +723,71 @@ mod tests {
         assert_eq!(
             info.meta.as_ref().and_then(|meta| meta.get("provider")),
             Some(&json!("codex"))
+        );
+        let meta = info.meta.unwrap();
+        assert_eq!(meta.get("supportsReasoningEffort"), Some(&json!(true)));
+        assert_eq!(meta.get("reasoningEffort"), Some(&json!("medium")));
+        assert_eq!(
+            meta.get("reasoningEfforts")
+                .and_then(Value::as_array)
+                .and_then(|options| options.first())
+                .and_then(|option| option.get("description")),
+            Some(&json!("Balanced reasoning"))
+        );
+    }
+
+    #[test]
+    fn codex_effort_resolution_uses_default_and_accepts_ultra() {
+        let model = CodexModel {
+            id: "gpt-5.6-sol".to_owned(),
+            name: "GPT-5.6-Sol".to_owned(),
+            description: None,
+            is_default: true,
+            supported_reasoning_efforts: vec![
+                CodexReasoningEffort {
+                    value: "low".to_owned(),
+                    description: None,
+                },
+                CodexReasoningEffort {
+                    value: "max".to_owned(),
+                    description: Some("Maximum single-agent depth".to_owned()),
+                },
+                CodexReasoningEffort {
+                    value: "ultra".to_owned(),
+                    description: Some("Automatic task delegation".to_owned()),
+                },
+            ],
+            default_reasoning_effort: Some("low".to_owned()),
+        };
+        assert_eq!(
+            resolve_codex_effort(&model, None).unwrap().as_deref(),
+            Some("low")
+        );
+        assert_eq!(
+            resolve_codex_effort(&model, Some("ultra"))
+                .unwrap()
+                .as_deref(),
+            Some("ultra")
+        );
+        assert!(resolve_codex_effort(&model, Some("medium")).is_err());
+
+        let info = codex_model_info(&model, "ChatGPT subscription");
+        let options =
+            xai_grok_shell::sampling::types::parse_reasoning_efforts_meta(info.meta.as_ref())
+                .unwrap();
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| (option.label.as_str(), option.value))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Low", xai_grok_shell::sampling::types::ReasoningEffort::Low),
+                ("Max", xai_grok_shell::sampling::types::ReasoningEffort::Max),
+                (
+                    "Ultra",
+                    xai_grok_shell::sampling::types::ReasoningEffort::Ultra,
+                ),
+            ]
         );
     }
 
